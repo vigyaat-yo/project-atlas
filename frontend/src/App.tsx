@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import MarsGlobe from './components/MarsGlobe'
+import { useRef, useState } from 'react'
+import MarsGlobe, { showMissionRoute } from './components/MarsGlobe'
+import type { Viewer } from 'cesium'
 
 import './mars.css'
 
@@ -12,6 +13,7 @@ const layers = [
 ]
 
 export default function App() {
+  const viewerRef = useRef<Viewer | null>(null)
   const [backendStatus, setBackendStatus] = useState('NOT TESTED')
   const [terrainInfo, setTerrainInfo] = useState<any>(null)
   const [routeLength, setRouteLength] = useState<number | null>(null)
@@ -45,6 +47,9 @@ export default function App() {
   mean: data.mean_risk,
   max: data.max_risk,
 })
+if (viewerRef.current) {
+  showMissionRoute(viewerRef.current, data.route)
+}
   } catch (error) {
     console.error('Route request failed:', error)
   }
@@ -137,7 +142,7 @@ export default function App() {
             3D VIEWPORT · PROTOTYPE
           </div>
 
-          <MarsGlobe />
+          <MarsGlobe viewerRef={viewerRef} />
         </section>
       </div>
 
