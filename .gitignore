@@ -1,0 +1,28 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+dist/
+
+# Environment files
+.env
+.env.*
+
+# Large/raw NASA data
+data/raw/
+
+# Generated terrain previews
+data/processed/*.png
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+data/processed/jezero_mola.npy
+data/processed/jezero_local.npy
+data/processed/jezero_slope.npy
+data/processed/jezero_slope_risk.npy
