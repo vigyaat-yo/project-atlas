@@ -4,23 +4,35 @@ import type { Viewer } from 'cesium'
 
 import './mars.css'
 
-const layers = [
-  'Elevation',
-  'Slope',
-  'Terrain hazards',
-  'Science targets',
-  'Perseverance',
-]
+/** Mutually exclusive terrain analysis layers */
+const terrainLayers = ['Elevation', 'Slope', 'Terrain hazards']
+
+/** Independent overlay toggles */
+const overlayLayers = ['Science targets', 'Perseverance']
 
 export default function App() {
   const viewerRef = useRef<Viewer | null>(null)
   const [backendStatus, setBackendStatus] = useState('NOT TESTED')
+  const [activeLayer, setActiveLayer] = useState<string | null>(null)
+  const [overlays, setOverlays] = useState<Set<string>>(new Set())
   const [terrainInfo, setTerrainInfo] = useState<any>(null)
   const [routeLength, setRouteLength] = useState<number | null>(null)
   const [routeRisk, setRouteRisk] = useState<{
   mean: number
   max: number
 } | null>(null)
+
+  const toggleOverlay = (name: string) => {
+    setOverlays((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) {
+        next.delete(name)
+      } else {
+        next.add(name)
+      }
+      return next
+    })
+  }
 
   const checkBackend = async () => {
     try {
@@ -74,25 +86,60 @@ if (viewerRef.current) {
 
       <div className="workspace">
         <aside className="sidebar">
-          <h2 className="section-label">DATA LAYERS</h2>
+          <h2 className="section-label">TERRAIN ANALYSIS</h2>
 
-          {layers.map((layer) => (
+          {terrainLayers.map((layer) => (
             <label className="layer" key={layer}>
-              <input type="checkbox" disabled />
+              <input
+                type="checkbox"
+                checked={activeLayer === layer}
+                onChange={() =>
+                  setActiveLayer(activeLayer === layer ? null : layer)
+                }
+              />
               {layer}
             </label>
           ))}
 
-          <div className="layer-note">
-            DATA LAYERS ARE CURRENTLY
-            <br />
-            INACTIVE.
-            <br />
-            <br />
-            NASA terrain and mission data
-            will be connected in upcoming
-            development phases.
-          </div>
+          <h2 className="section-label" style={{ marginTop: 24 }}>
+            OVERLAYS
+          </h2>
+
+          {overlayLayers.map((layer) => (
+            <label className="layer" key={layer}>
+              <input
+                type="checkbox"
+                checked={overlays.has(layer)}
+                onChange={() => toggleOverlay(layer)}
+              />
+              {layer}
+            </label>
+          ))}
+
+          {(activeLayer || overlays.size > 0) && (
+            <div className="layer-note">
+              {activeLayer && (
+                <>
+                  ACTIVE LAYER:
+                  <br />
+                  {activeLayer}
+                </>
+              )}
+              {activeLayer && overlays.size > 0 && (
+                <>
+                  <br />
+                  <br />
+                </>
+              )}
+              {overlays.size > 0 && (
+                <>
+                  OVERLAYS:
+                  <br />
+                  {[...overlays].join(', ')}
+                </>
+              )}
+            </div>
+          )}
 
           <button onClick={checkBackend}>
             Test Terrain API
@@ -142,7 +189,11 @@ if (viewerRef.current) {
             3D VIEWPORT · PROTOTYPE
           </div>
 
-          <MarsGlobe viewerRef={viewerRef} />
+          <MarsGlobe
+            viewerRef={viewerRef}
+            activeLayer={activeLayer}
+            overlays={overlays}
+          />
         </section>
       </div>
 
