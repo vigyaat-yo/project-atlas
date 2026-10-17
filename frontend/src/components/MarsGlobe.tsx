@@ -4,7 +4,19 @@ import * as Cesium from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 
 // ----------------------------------------------------------------
-// ROUTE VISUALIZATION
+// JEZERO GRID CONSTANTS (matching backend)
+// ----------------------------------------------------------------
+
+const GRID_LAT_START = 20.4453125
+const GRID_LON_START = 75.4453125
+const GRID_STEP = 0.0078125
+const GRID_ROWS = 513
+const GRID_COLS = 513
+const GRID_LAT_END = GRID_LAT_START - (GRID_ROWS - 1) * GRID_STEP
+const GRID_LON_END = GRID_LON_START + (GRID_COLS - 1) * GRID_STEP
+
+// ----------------------------------------------------------------
+// ROUTE VISUALIZATION (legacy export for test button)
 // ----------------------------------------------------------------
 
 export function showMissionRoute(
@@ -12,8 +24,8 @@ export function showMissionRoute(
   route: number[][],
 ) {
   const positions = route.map(([row, col]) => {
-    const latitude = 20.4453125 - row * 0.0078125
-    const longitude = 75.4453125 + col * 0.0078125
+    const latitude = GRID_LAT_START - row * GRID_STEP
+    const longitude = GRID_LON_START + col * GRID_STEP
 
     return Cesium.Cartesian3.fromDegrees(
       longitude,
@@ -39,9 +51,6 @@ export function showMissionRoute(
 
 type RGBA = [number, number, number, number]
 
-/**
- * Elevation color ramp: deep blue (low) → cyan → green → yellow → red (high).
- */
 function elevationToColor(
   value: number,
   min: number,
@@ -76,11 +85,7 @@ function elevationToColor(
   return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255), 255]
 }
 
-/**
- * Slope color ramp: green (flat, 0°) → yellow → orange → red (steep, ≥30°).
- */
 function slopeToColor(slopeDeg: number): RGBA {
-  // Clamp to 0–30° range for visualization
   const t = Math.max(0, Math.min(1, slopeDeg / 30))
   let r: number, g: number, b: number
 
@@ -98,11 +103,6 @@ function slopeToColor(slopeDeg: number): RGBA {
   return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255), 255]
 }
 
-/**
- * Hazard/risk color ramp: cool green (safe) → warm yellow → hot red (dangerous).
- * Risk is derived from slope: risk = slope_degrees * slope_degrees / 10.
- * The scale is clamped at risk=50 for visualization.
- */
 function riskToColor(risk: number): RGBA {
   const t = Math.max(0, Math.min(1, risk / 50))
   let r: number, g: number, b: number
@@ -125,7 +125,7 @@ function riskToColor(risk: number): RGBA {
 }
 
 // ----------------------------------------------------------------
-// GLSL SHADERS FOR PER-VERTEX COLOR
+// GLSL SHADERS
 // ----------------------------------------------------------------
 
 const VERTEX_COLOR_VS = `
@@ -160,24 +160,17 @@ void main()
 `
 
 // ----------------------------------------------------------------
-// TERRAIN GEOMETRY CACHE
+// TERRAIN CACHE
 // ----------------------------------------------------------------
 
-/**
- * Precomputed terrain geometry and derived analysis grids.
- * Positions/indices are shared across layer changes.
- * Slope and risk are computed once from the elevation grid.
- */
 interface TerrainCache {
   packedPositions: Float64Array
   indices: Uint32Array
   boundingSphere: Cesium.BoundingSphere
   elevationMin: number
   elevationMax: number
-  /** Slope in degrees for each grid cell */
   slopeGrid: Float32Array
   slopeMax: number
-  /** Risk score for each grid cell (slope² / 10) */
   riskGrid: Float32Array
   riskMax: number
   riskMean: number
@@ -195,8 +188,6 @@ function getTerrainCache(): TerrainCache {
   const height = globalTerrain.height
   const step = globalTerrain.step
   const verticalExaggeration = 40
-
-  // Mars reference radius from the MOLA product
   const marsRadius = 3396000
   const stepRadians = Cesium.Math.toRadians(step)
 
@@ -214,9 +205,6 @@ function getTerrainCache(): TerrainCache {
 
       const lat = Cesium.Math.toRadians(latitude)
       const lon = Cesium.Math.toRadians(longitude)
-
-      // MOLA elevation is relative to the Mars areoid.
-      // Build the actual planetary radius directly.
       const radius = marsRadius + elevation * verticalExaggeration
       const cosLat = Math.cos(lat)
 
@@ -238,35 +226,25 @@ function getTerrainCache(): TerrainCache {
       const bottomRight = bottomLeft + 1
 
       indices.push(
-        topLeft,
-        bottomLeft,
-        topRight,
-        topRight,
-        bottomLeft,
-        bottomRight,
+        topLeft, bottomLeft, topRight,
+        topRight, bottomLeft, bottomRight,
       )
     }
   }
 
-  // ----------------------------------------------------------
-  // Compute slope (degrees) from elevation via finite differences
-  // dy is constant: marsRadius * stepRadians
-  // dx varies with latitude: marsRadius * cos(lat) * stepRadians
-  // ----------------------------------------------------------
+  // Compute slope and risk from elevation
   const slopeGrid = new Float32Array(width * height)
   const riskGrid = new Float32Array(width * height)
   let slopeMax = 0
   let riskSum = 0
-
-  const dy = marsRadius * stepRadians // metres per row step
+  const dy = marsRadius * stepRadians
 
   for (let row = 0; row < height; row++) {
     const latitude = globalTerrain.lat_start - row * step
     const cosLat = Math.cos(Cesium.Math.toRadians(latitude))
-    const dx = marsRadius * cosLat * stepRadians // metres per col step
+    const dx = marsRadius * cosLat * stepRadians
 
     for (let col = 0; col < width; col++) {
-      // Elevation neighbours (clamped at boundaries)
       const r0 = row > 0 ? row - 1 : row
       const r1 = row < height - 1 ? row + 1 : row
       const c0 = col > 0 ? col - 1 : col
@@ -289,17 +267,14 @@ function getTerrainCache(): TerrainCache {
       slopeGrid[idx] = slopeDeg
       if (slopeDeg > slopeMax) slopeMax = slopeDeg
 
-      // Risk model: slope² / 10 (same model as the backend regional data)
-      const risk = (slopeDeg * slopeDeg) / 10
-      riskGrid[idx] = risk
-      riskSum += risk
+      const riskVal = (slopeDeg * slopeDeg) / 10
+      riskGrid[idx] = riskVal
+      riskSum += riskVal
     }
   }
 
   terrainCache = {
-    packedPositions: new Float64Array(
-      Cesium.Cartesian3.packArray(positions),
-    ),
+    packedPositions: new Float64Array(Cesium.Cartesian3.packArray(positions)),
     indices: new Uint32Array(indices),
     boundingSphere: Cesium.BoundingSphere.fromPoints(positions),
     elevationMin: elevMin,
@@ -312,11 +287,10 @@ function getTerrainCache(): TerrainCache {
   }
 
   console.log(
-    'TERRAIN CACHE BUILT:',
+    'TERRAIN CACHE:',
     width, '×', height,
     '| elev:', elevMin.toFixed(0), '→', elevMax.toFixed(0), 'm',
-    '| max slope:', slopeMax.toFixed(2), '°',
-    '| mean risk:', terrainCache.riskMean.toFixed(2),
+    '| slope max:', slopeMax.toFixed(2), '°',
   )
 
   return terrainCache
@@ -326,14 +300,6 @@ function getTerrainCache(): TerrainCache {
 // BUILD TERRAIN PRIMITIVE
 // ----------------------------------------------------------------
 
-/**
- * Creates a Cesium Primitive for the global MOLA terrain.
- *
- * - null            → flat Mars color (#a85c42)
- * - 'Elevation'     → per-vertex color ramp from MOLA elevations
- * - 'Slope'         → per-vertex color ramp from computed slope (degrees)
- * - 'Terrain hazards' → per-vertex color ramp from computed risk score
- */
 function buildTerrainPrimitive(
   activeLayer: string | null,
 ): Cesium.Primitive {
@@ -342,7 +308,6 @@ function buildTerrainPrimitive(
   const height = globalTerrain.height
   const vertexCount = width * height
 
-  // Determine per-vertex color function
   let colorFn: ((row: number, col: number) => RGBA) | null = null
 
   if (activeLayer === 'Elevation') {
@@ -361,7 +326,6 @@ function buildTerrainPrimitive(
   }
 
   if (colorFn) {
-    // ---- PER-VERTEX COLORING ----
     const colors = new Uint8Array(vertexCount * 4)
 
     for (let row = 0; row < height; row++) {
@@ -403,15 +367,12 @@ function buildTerrainPrimitive(
       appearance: new Cesium.Appearance({
         vertexShaderSource: VERTEX_COLOR_VS,
         fragmentShaderSource: VERTEX_COLOR_FS,
-        renderState: Cesium.Appearance.getDefaultRenderState(
-          false,
-          false,
-        ),
+        renderState: (Cesium.Appearance as any).getDefaultRenderState(false, false),
       }),
     })
   }
 
-  // ---- DEFAULT: FLAT MARS COLOR ----
+  // Default flat Mars color
   const geometry = new Cesium.Geometry({
     attributes: {
       position: new Cesium.GeometryAttribute({
@@ -448,84 +409,90 @@ function buildTerrainPrimitive(
 }
 
 // ----------------------------------------------------------------
-// SCIENCE TARGETS DATA
+// SCIENCE TARGETS
 // ----------------------------------------------------------------
 
 const SCIENCE_TARGETS = [
-  {
-    name: 'Séítah (South)',
-    lon: 77.37,
-    lat: 18.38,
-    description: 'Olivine-rich terrain — key astrobiology target',
-  },
-  {
-    name: 'Midway (Delta Front)',
-    lon: 77.44,
-    lat: 18.45,
-    description: 'Ancient river delta front — sedimentary deposits',
-  },
-  {
-    name: 'Crater Floor Fractured Rough',
-    lon: 77.50,
-    lat: 18.47,
-    description: 'Igneous basement — earliest accessible rocks',
-  },
-  {
-    name: 'Three Forks',
-    lon: 77.42,
-    lat: 18.47,
-    description: 'Delta / crater floor contact zone',
-  },
+  { name: 'Séítah (South)', lon: 77.37, lat: 18.38,
+    description: 'Olivine-rich terrain — key astrobiology target' },
+  { name: 'Midway (Delta Front)', lon: 77.44, lat: 18.45,
+    description: 'Ancient river delta front — sedimentary deposits' },
+  { name: 'Crater Floor Fractured Rough', lon: 77.50, lat: 18.47,
+    description: 'Igneous basement — earliest accessible rocks' },
+  { name: 'Three Forks', lon: 77.42, lat: 18.47,
+    description: 'Delta / crater floor contact zone' },
 ]
 
 // ----------------------------------------------------------------
-// PERSEVERANCE MISSION DATA
+// PERSEVERANCE
 // ----------------------------------------------------------------
 
 const PERSEVERANCE_WAYPOINTS = [
-  {
-    name: 'Perseverance Landing Site (Octavia E. Butler)',
-    lon: 77.4508,
-    lat: 18.4447,
+  { name: 'Perseverance Landing Site (Octavia E. Butler)',
+    lon: 77.4508, lat: 18.4447,
     description: 'Touchdown: 18 Feb 2021',
-    color: Cesium.Color.SPRINGGREEN,
-    size: 16,
-  },
-  {
-    name: 'Ingenuity Airfield',
-    lon: 77.4511,
-    lat: 18.4340,
+    color: Cesium.Color.SPRINGGREEN, size: 16 },
+  { name: 'Ingenuity Airfield',
+    lon: 77.4511, lat: 18.4340,
     description: 'First powered flight on another planet — 19 Apr 2021',
-    color: Cesium.Color.DEEPSKYBLUE,
-    size: 12,
-  },
+    color: Cesium.Color.DEEPSKYBLUE, size: 12 },
 ]
+
+// ----------------------------------------------------------------
+// ENTITY IDS
+// ----------------------------------------------------------------
+
+const ROUTE_START_ID = 'route-start-marker'
+const ROUTE_DEST_ID = 'route-dest-marker'
+const CALCULATED_ROUTE_ID = 'calculated-route'
+const GRID_BOUNDARY_ID = 'grid-boundary'
 
 // ----------------------------------------------------------------
 // COMPONENT
 // ----------------------------------------------------------------
 
+export interface GlobePoint {
+  lat: number
+  lon: number
+}
+
 export default function MarsGlobe({
   viewerRef,
   activeLayer,
   overlays,
+  selectionMode,
+  startPoint,
+  destPoint,
+  routeData,
+  onPointSelected,
 }: {
   viewerRef: React.MutableRefObject<Cesium.Viewer | null>
   activeLayer: string | null
   overlays: Set<string>
+  selectionMode: 'start' | 'destination' | null
+  startPoint: GlobePoint | null
+  destPoint: GlobePoint | null
+  routeData: number[][] | null
+  onPointSelected: (lat: number, lon: number) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const terrainPrimitiveRef = useRef<Cesium.Primitive | null>(null)
   const scienceEntityIds = useRef<string[]>([])
   const perseveranceEntityIds = useRef<string[]>([])
 
+  // Refs to avoid re-registering the click handler
+  const selectionModeRef = useRef(selectionMode)
+  const onPointSelectedRef = useRef(onPointSelected)
+  useEffect(() => {
+    selectionModeRef.current = selectionMode
+    onPointSelectedRef.current = onPointSelected
+  }, [selectionMode, onPointSelected])
+
   // --------------------------------
-  // VIEWER INITIALIZATION (runs once)
+  // VIEWER INITIALIZATION
   // --------------------------------
   useEffect(() => {
-    if (!containerRef.current) {
-      return
-    }
+    if (!containerRef.current) return
 
     const viewer = new Cesium.Viewer(containerRef.current, {
       ellipsoid: Cesium.Ellipsoid.MARS,
@@ -543,42 +510,28 @@ export default function MarsGlobe({
 
     viewerRef.current = viewer
 
-    // --------------------------------
-    // MARS APPEARANCE
-    // --------------------------------
-
     viewer.scene.backgroundColor =
       Cesium.Color.fromCssColorString('#05070d')
-
     viewer.scene.globe.baseColor =
       Cesium.Color.fromCssColorString('#a85c42')
-
     viewer.scene.globe.show = false
 
-    // --------------------------------
-    // JEZERO CRATER (always visible)
-    // --------------------------------
+    // ---- JEZERO CRATER (always visible) ----
 
-    const jezeroLatitude = 18.44
-    const jezeroLongitude = 77.45
+    const jezeroLat = 18.44
+    const jezeroLon = 77.45
 
     viewer.entities.add({
       name: 'Jezero Crater',
-
       position: Cesium.Cartesian3.fromDegrees(
-        jezeroLongitude,
-        jezeroLatitude,
-        0,
-        Cesium.Ellipsoid.MARS,
+        jezeroLon, jezeroLat, 0, Cesium.Ellipsoid.MARS,
       ),
-
       point: {
         pixelSize: 14,
         color: Cesium.Color.ORANGERED,
         outlineColor: Cesium.Color.WHITE,
         outlineWidth: 2,
       },
-
       label: {
         text: 'JEZERO CRATER',
         font: '14px sans-serif',
@@ -591,9 +544,7 @@ export default function MarsGlobe({
       },
     })
 
-    // --------------------------------
-    // SCIENCE TARGETS (toggleable)
-    // --------------------------------
+    // ---- SCIENCE TARGETS (hidden by default) ----
 
     const sciIds: string[] = []
     SCIENCE_TARGETS.forEach((target, i) => {
@@ -603,22 +554,16 @@ export default function MarsGlobe({
         id,
         name: target.name,
         description: target.description,
-        show: false, // hidden by default, toggled by overlay
-
+        show: false,
         position: Cesium.Cartesian3.fromDegrees(
-          target.lon,
-          target.lat,
-          0,
-          Cesium.Ellipsoid.MARS,
+          target.lon, target.lat, 0, Cesium.Ellipsoid.MARS,
         ),
-
         point: {
           pixelSize: 11,
           color: Cesium.Color.YELLOW,
           outlineColor: Cesium.Color.BLACK,
           outlineWidth: 2,
         },
-
         label: {
           text: target.name.toUpperCase(),
           font: '11px sans-serif',
@@ -633,9 +578,7 @@ export default function MarsGlobe({
     })
     scienceEntityIds.current = sciIds
 
-    // --------------------------------
-    // PERSEVERANCE WAYPOINTS (toggleable)
-    // --------------------------------
+    // ---- PERSEVERANCE (hidden by default) ----
 
     const persIds: string[] = []
     PERSEVERANCE_WAYPOINTS.forEach((wp, i) => {
@@ -645,22 +588,16 @@ export default function MarsGlobe({
         id,
         name: wp.name,
         description: wp.description,
-        show: false, // hidden by default
-
+        show: false,
         position: Cesium.Cartesian3.fromDegrees(
-          wp.lon,
-          wp.lat,
-          0,
-          Cesium.Ellipsoid.MARS,
+          wp.lon, wp.lat, 0, Cesium.Ellipsoid.MARS,
         ),
-
         point: {
           pixelSize: wp.size,
           color: wp.color,
           outlineColor: Cesium.Color.WHITE,
           outlineWidth: 2,
         },
-
         label: {
           text: wp.name.toUpperCase(),
           font: '11px sans-serif',
@@ -675,65 +612,96 @@ export default function MarsGlobe({
     })
     perseveranceEntityIds.current = persIds
 
-    // --------------------------------
-    // CAMERA
-    // --------------------------------
+    // ---- GRID BOUNDARY (shown during selection) ----
+
+    viewer.entities.add({
+      id: GRID_BOUNDARY_ID,
+      name: 'Jezero Route Planning Area',
+      show: false,
+      polyline: {
+        positions: Cesium.Cartesian3.fromDegreesArray(
+          [
+            GRID_LON_START, GRID_LAT_START,
+            GRID_LON_END,   GRID_LAT_START,
+            GRID_LON_END,   GRID_LAT_END,
+            GRID_LON_START, GRID_LAT_END,
+            GRID_LON_START, GRID_LAT_START,
+          ],
+          Cesium.Ellipsoid.MARS,
+        ),
+        width: 2,
+        material: new Cesium.PolylineDashMaterialProperty({
+          color: Cesium.Color.CYAN.withAlpha(0.6),
+          dashLength: 16,
+        }),
+      },
+    })
+
+    // ---- CLICK HANDLER (point selection) ----
+
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas)
+    handler.setInputAction(
+      (movement: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
+        if (!selectionModeRef.current) return
+
+        const cartesian = viewer.camera.pickEllipsoid(
+          movement.position,
+          Cesium.Ellipsoid.MARS,
+        )
+        if (!cartesian) return
+
+        const carto = Cesium.Cartographic.fromCartesian(
+          cartesian,
+          Cesium.Ellipsoid.MARS,
+        )
+        const lat = Cesium.Math.toDegrees(carto.latitude)
+        const lon = Cesium.Math.toDegrees(carto.longitude)
+
+        onPointSelectedRef.current(lat, lon)
+      },
+      Cesium.ScreenSpaceEventType.LEFT_CLICK,
+    )
+
+    // ---- CAMERA ----
 
     viewer.camera.flyTo({
       destination: Cesium.Cartesian3.fromDegrees(
-        jezeroLongitude,
-        jezeroLatitude,
-        500000,
-        Cesium.Ellipsoid.MARS,
+        jezeroLon, jezeroLat, 500000, Cesium.Ellipsoid.MARS,
       ),
       duration: 2,
     })
 
-    // --------------------------------
-    // SELECTION
-    // --------------------------------
-
     viewer.selectedEntityChanged.addEventListener((entity) => {
-      if (!entity) {
-        return
-      }
-
+      if (!entity) return
       console.log('Selected:', entity.name)
     })
 
-    // --------------------------------
-    // CLEANUP
-    // --------------------------------
-
     return () => {
+      handler.destroy()
       viewerRef.current = null
       viewer.destroy()
     }
   }, [viewerRef])
 
   // --------------------------------
-  // TERRAIN LAYER MANAGEMENT
-  // Swaps the terrain primitive to reflect the active analysis layer.
+  // TERRAIN LAYER
   // --------------------------------
   useEffect(() => {
     const viewer = viewerRef.current
     if (!viewer || viewer.isDestroyed()) return
 
-    // Remove the previous terrain primitive (if any)
     if (terrainPrimitiveRef.current) {
       viewer.scene.primitives.remove(terrainPrimitiveRef.current)
       terrainPrimitiveRef.current = null
     }
 
-    // Build and add the new terrain primitive
     const primitive = buildTerrainPrimitive(activeLayer)
     viewer.scene.primitives.add(primitive)
     terrainPrimitiveRef.current = primitive
   }, [activeLayer, viewerRef])
 
   // --------------------------------
-  // OVERLAY MANAGEMENT
-  // Toggles visibility of science targets and Perseverance markers.
+  // OVERLAYS
   // --------------------------------
   useEffect(() => {
     const viewer = viewerRef.current
@@ -741,16 +709,134 @@ export default function MarsGlobe({
 
     const showScience = overlays.has('Science targets')
     scienceEntityIds.current.forEach((id) => {
-      const entity = viewer.entities.getById(id)
-      if (entity) entity.show = showScience
+      const e = viewer.entities.getById(id)
+      if (e) e.show = showScience
     })
 
-    const showPerseverance = overlays.has('Perseverance')
+    const showPers = overlays.has('Perseverance')
     perseveranceEntityIds.current.forEach((id) => {
-      const entity = viewer.entities.getById(id)
-      if (entity) entity.show = showPerseverance
+      const e = viewer.entities.getById(id)
+      if (e) e.show = showPers
     })
   }, [overlays, viewerRef])
+
+  // --------------------------------
+  // START / DESTINATION MARKERS
+  // --------------------------------
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer || viewer.isDestroyed()) return
+
+    // Start marker
+    const existingStart = viewer.entities.getById(ROUTE_START_ID)
+    if (existingStart) viewer.entities.remove(existingStart)
+
+    if (startPoint) {
+      viewer.entities.add({
+        id: ROUTE_START_ID,
+        name: 'Route Start',
+        position: Cesium.Cartesian3.fromDegrees(
+          startPoint.lon, startPoint.lat, 0, Cesium.Ellipsoid.MARS,
+        ),
+        point: {
+          pixelSize: 16,
+          color: Cesium.Color.LIME,
+          outlineColor: Cesium.Color.WHITE,
+          outlineWidth: 2,
+        },
+        label: {
+          text: `START\n${startPoint.lat.toFixed(3)}°N  ${startPoint.lon.toFixed(3)}°E`,
+          font: '12px sans-serif',
+          fillColor: Cesium.Color.LIME,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 3,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+          pixelOffset: new Cesium.Cartesian2(0, -20),
+        },
+      })
+    }
+  }, [startPoint, viewerRef])
+
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer || viewer.isDestroyed()) return
+
+    const existingDest = viewer.entities.getById(ROUTE_DEST_ID)
+    if (existingDest) viewer.entities.remove(existingDest)
+
+    if (destPoint) {
+      viewer.entities.add({
+        id: ROUTE_DEST_ID,
+        name: 'Route Destination',
+        position: Cesium.Cartesian3.fromDegrees(
+          destPoint.lon, destPoint.lat, 0, Cesium.Ellipsoid.MARS,
+        ),
+        point: {
+          pixelSize: 16,
+          color: Cesium.Color.RED,
+          outlineColor: Cesium.Color.WHITE,
+          outlineWidth: 2,
+        },
+        label: {
+          text: `DESTINATION\n${destPoint.lat.toFixed(3)}°N  ${destPoint.lon.toFixed(3)}°E`,
+          font: '12px sans-serif',
+          fillColor: Cesium.Color.RED,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 3,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+          pixelOffset: new Cesium.Cartesian2(0, -20),
+        },
+      })
+    }
+  }, [destPoint, viewerRef])
+
+  // --------------------------------
+  // CALCULATED ROUTE
+  // --------------------------------
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer || viewer.isDestroyed()) return
+
+    const existing = viewer.entities.getById(CALCULATED_ROUTE_ID)
+    if (existing) viewer.entities.remove(existing)
+
+    if (routeData && routeData.length > 0) {
+      const positions = routeData.map(([row, col]) => {
+        const lat = GRID_LAT_START - row * GRID_STEP
+        const lon = GRID_LON_START + col * GRID_STEP
+        return Cesium.Cartesian3.fromDegrees(
+          lon, lat, 0, Cesium.Ellipsoid.MARS,
+        )
+      })
+
+      viewer.entities.add({
+        id: CALCULATED_ROUTE_ID,
+        name: 'Calculated Route',
+        polyline: {
+          positions,
+          width: 5,
+          material: Cesium.Color.CYAN,
+        },
+      })
+    }
+  }, [routeData, viewerRef])
+
+  // --------------------------------
+  // SELECTION MODE (cursor + grid boundary)
+  // --------------------------------
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer || viewer.isDestroyed()) return
+
+    // Crosshair cursor when selecting
+    viewer.scene.canvas.style.cursor = selectionMode ? 'crosshair' : ''
+
+    // Show grid boundary when selecting
+    const boundary = viewer.entities.getById(GRID_BOUNDARY_ID)
+    if (boundary) boundary.show = !!selectionMode
+  }, [selectionMode, viewerRef])
 
   return (
     <div
