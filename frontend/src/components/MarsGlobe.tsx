@@ -133,6 +133,7 @@ in vec3 position3DHigh;
 in vec3 position3DLow;
 in vec3 normal;
 in vec4 color;
+in float batchId;
 
 out vec4 v_color;
 out vec3 v_normalEC;
@@ -354,7 +355,12 @@ function buildTerrainPrimitive(
           normalize: true,
           values: colors,
         }),
-      } as Cesium.GeometryAttributes,
+        batchId: new Cesium.GeometryAttribute({
+          componentDatatype: Cesium.ComponentDatatype.FLOAT,
+          componentsPerAttribute: 1,
+          values: new Float32Array(vertexCount),
+        }),
+      } as unknown as Cesium.GeometryAttributes,
       indices: new Uint32Array(cache.indices),
       primitiveType: Cesium.PrimitiveType.TRIANGLES,
       boundingSphere: cache.boundingSphere.clone(),
@@ -365,6 +371,7 @@ function buildTerrainPrimitive(
     return new Cesium.Primitive({
       asynchronous: false,
       cull: false,
+      allowPicking: false,
       geometryInstances: new Cesium.GeometryInstance({ geometry }),
       appearance: new Cesium.Appearance({
         vertexShaderSource: VERTEX_COLOR_VS,
@@ -382,7 +389,7 @@ function buildTerrainPrimitive(
         componentsPerAttribute: 3,
         values: new Float64Array(cache.packedPositions),
       }),
-    } as Cesium.GeometryAttributes,
+    } as unknown as Cesium.GeometryAttributes,
     indices: new Uint32Array(cache.indices),
     primitiveType: Cesium.PrimitiveType.TRIANGLES,
     boundingSphere: cache.boundingSphere.clone(),
