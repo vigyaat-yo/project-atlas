@@ -418,33 +418,56 @@ function buildTerrainPrimitive(
 }
 
 // ----------------------------------------------------------------
-// SCIENCE TARGETS
+// SCIENCE TARGETS (Phase 5)
 // ----------------------------------------------------------------
 
-const SCIENCE_TARGETS = [
-  { name: 'Séítah (South)', lon: 77.37, lat: 18.38,
-    description: 'Olivine-rich terrain — key astrobiology target' },
+export interface ScienceTarget {
+  name: string
+  lon: number
+  lat: number
+  description: string
+  type?: string
+  priority?: string
+}
+
+export const SCIENCE_TARGETS: ScienceTarget[] = [
   { name: 'Midway (Delta Front)', lon: 77.44, lat: 18.45,
-    description: 'Ancient river delta front — sedimentary deposits' },
+    description: 'Ancient river delta sediments rich in clays & carbonates; prime biosignature search zone.',
+    type: 'Astrobiology & Sedimentology', priority: 'PRIMARY' },
+  { name: 'Séítah (South)', lon: 77.37, lat: 18.38,
+    description: 'Layered cumulate olivine sand dunes and rocks revealing ancient magma crystallization.',
+    type: 'Igneous Petrology', priority: 'HIGH' },
   { name: 'Crater Floor Fractured Rough', lon: 77.50, lat: 18.47,
-    description: 'Igneous basement — earliest accessible rocks' },
+    description: 'Oldest exposed volcanic bedrock on crater floor with polygonal cooling joints.',
+    type: 'Basement Stratigraphy', priority: 'MODERATE' },
   { name: 'Three Forks', lon: 77.42, lat: 18.47,
-    description: 'Delta / crater floor contact zone' },
+    description: 'Delta contact margin and site of the first sample cache depot on another planet.',
+    type: 'Delta Staging & Sample Depot', priority: 'HIGH' },
+  { name: 'Kodiak Butte', lon: 77.41, lat: 18.41,
+    description: 'Isolated erosional remnant exhibiting classic delta strata, proving deep lake history.',
+    type: 'Fluvial Geomorphology', priority: 'PRIMARY' },
+  { name: 'Belva Crater Rim', lon: 77.38, lat: 18.52,
+    description: '1-km impact crater cross-cutting the delta, revealing layered sedimentary deposition.',
+    type: 'Impact Excavation', priority: 'HIGH' },
 ]
 
 // ----------------------------------------------------------------
-// PERSEVERANCE
+// PERSEVERANCE MISSION LANDMARKS (Phase 6)
 // ----------------------------------------------------------------
 
-const PERSEVERANCE_WAYPOINTS = [
+export const PERSEVERANCE_WAYPOINTS = [
   { name: 'Perseverance Landing Site (Octavia E. Butler)',
     lon: 77.4508, lat: 18.4447,
-    description: 'Touchdown: 18 Feb 2021',
+    description: 'Sky Crane touchdown on Mars: 18 Feb 2021',
     color: Cesium.Color.SPRINGGREEN, size: 16 },
-  { name: 'Ingenuity Airfield',
+  { name: 'Ingenuity Airfield (Wright Brothers Field)',
     lon: 77.4511, lat: 18.4340,
-    description: 'First powered flight on another planet — 19 Apr 2021',
-    color: Cesium.Color.DEEPSKYBLUE, size: 12 },
+    description: 'Site of first powered atmospheric flight on another planet: 19 Apr 2021',
+    color: Cesium.Color.DEEPSKYBLUE, size: 13 },
+  { name: 'Three Forks Sample Depot',
+    lon: 77.4195, lat: 18.4712,
+    description: '10 titanium sample tubes cached on surface for Mars Sample Return (MSR)',
+    color: Cesium.Color.GOLD, size: 13 },
 ]
 
 // ----------------------------------------------------------------
@@ -454,6 +477,7 @@ const PERSEVERANCE_WAYPOINTS = [
 const ROUTE_START_ID = 'route-start-marker'
 const ROUTE_DEST_ID = 'route-dest-marker'
 const CALCULATED_ROUTE_ID = 'calculated-route'
+const COMPARISON_ROUTE_ID = 'comparison-route'
 const GRID_BOUNDARY_ID = 'grid-boundary'
 
 // ----------------------------------------------------------------
@@ -473,7 +497,9 @@ export default function MarsGlobe({
   startPoint,
   destPoint,
   routeData,
+  comparisonRouteData,
   onPointSelected,
+  onTargetSelected,
 }: {
   viewerRef: React.MutableRefObject<Cesium.Viewer | null>
   activeLayer: string | null
@@ -482,7 +508,9 @@ export default function MarsGlobe({
   startPoint: GlobePoint | null
   destPoint: GlobePoint | null
   routeData: number[][] | null
+  comparisonRouteData?: number[][] | null
   onPointSelected: (lat: number, lon: number) => void
+  onTargetSelected?: (target: { name: string; description?: string }) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const terrainPrimitiveRef = useRef<Cesium.Primitive | null>(null)
@@ -492,10 +520,12 @@ export default function MarsGlobe({
   // Refs to avoid re-registering the click handler
   const selectionModeRef = useRef(selectionMode)
   const onPointSelectedRef = useRef(onPointSelected)
+  const onTargetSelectedRef = useRef(onTargetSelected)
   useEffect(() => {
     selectionModeRef.current = selectionMode
     onPointSelectedRef.current = onPointSelected
-  }, [selectionMode, onPointSelected])
+    onTargetSelectedRef.current = onTargetSelected
+  }, [selectionMode, onPointSelected, onTargetSelected])
 
   // --------------------------------
   // VIEWER INITIALIZATION
@@ -683,6 +713,16 @@ export default function MarsGlobe({
     viewer.selectedEntityChanged.addEventListener((entity) => {
       if (!entity) return
       console.log('Selected:', entity.name)
+      if (onTargetSelectedRef.current && entity.name) {
+        let desc = ''
+        if (typeof (entity as any).description?.getValue === 'function') {
+          desc = (entity as any).description.getValue(viewer.clock.currentTime) || ''
+        }
+        onTargetSelectedRef.current({
+          name: entity.name,
+          description: desc,
+        })
+      }
     })
 
     return () => {
@@ -831,6 +871,40 @@ export default function MarsGlobe({
       })
     }
   }, [routeData, viewerRef])
+
+  // --------------------------------
+  // COMPARISON ROUTE (Phase 4 Baseline)
+  // --------------------------------
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer || viewer.isDestroyed()) return
+
+    const existing = viewer.entities.getById(COMPARISON_ROUTE_ID)
+    if (existing) viewer.entities.remove(existing)
+
+    if (comparisonRouteData && comparisonRouteData.length > 0) {
+      const positions = comparisonRouteData.map(([row, col]) => {
+        const lat = GRID_LAT_START - row * GRID_STEP
+        const lon = GRID_LON_START + col * GRID_STEP
+        return Cesium.Cartesian3.fromDegrees(
+          lon, lat, 0, Cesium.Ellipsoid.MARS,
+        )
+      })
+
+      viewer.entities.add({
+        id: COMPARISON_ROUTE_ID,
+        name: 'Direct / Shortest Baseline',
+        polyline: {
+          positions,
+          width: 3,
+          material: new Cesium.PolylineDashMaterialProperty({
+            color: Cesium.Color.ORANGE.withAlpha(0.85),
+            dashLength: 12,
+          }),
+        },
+      })
+    }
+  }, [comparisonRouteData, viewerRef])
 
   // --------------------------------
   // SELECTION MODE (cursor + grid boundary)

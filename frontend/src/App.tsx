@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import MarsGlobe, { type GlobePoint } from './components/MarsGlobe'
+import MarsGlobe, { type GlobePoint, SCIENCE_TARGETS, PERSEVERANCE_WAYPOINTS } from './components/MarsGlobe'
 import { LegendPanel } from './components/LegendPanel'
 import { GlobeErrorBoundary } from './components/GlobeErrorBoundary'
 import * as Cesium from 'cesium'
@@ -37,24 +37,44 @@ const PRESETS: MissionPreset[] = [
     start: { lat: 18.4447, lon: 77.4508 },
     dest: { lat: 18.3800, lon: 77.3700 },
   },
+  {
+    name: 'Delta Front → Belva Crater Rim',
+    subtitle: 'Ascent to crater rim sedimentary exposure',
+    start: { lat: 18.4500, lon: 77.4400 },
+    dest: { lat: 18.5200, lon: 77.3800 },
+  },
 ]
+
+type RouteStrategy = 'safe' | 'balanced' | 'direct'
 
 export default function App() {
   const viewerRef = useRef<Cesium.Viewer | null>(null)
-  const [activeTab, setActiveTab] = useState<'mission' | 'layers'>('mission')
+  const [activeTab, setActiveTab] = useState<'mission' | 'layers' | 'targets'>('mission')
   const [backendStatus, setBackendStatus] = useState<'CONNECTED' | 'OFFLINE' | 'CONNECTING'>('CONNECTING')
   const [activeLayer, setActiveLayer] = useState<string | null>('Elevation')
   const [overlays, setOverlays] = useState<Set<string>>(new Set(['Science targets', 'Perseverance']))
   const [terrainInfo, setTerrainInfo] = useState<any>(null)
 
-  // Interactive Route Planning State (Phase 3)
+  // Interactive Route Planning State (Phase 3 & Phase 4)
   const [selectionMode, setSelectionMode] = useState<'start' | 'destination' | null>(null)
   const [startPoint, setStartPoint] = useState<GlobePoint | null>({ lat: 18.4447, lon: 77.4508 })
   const [destPoint, setDestPoint] = useState<GlobePoint | null>({ lat: 18.4500, lon: 77.4400 })
+  const [routeStrategy, setRouteStrategy] = useState<RouteStrategy>('balanced')
+  const [showComparison, setShowComparison] = useState<boolean>(true)
   const [routeData, setRouteData] = useState<number[][] | null>(null)
+  const [comparisonRouteData, setComparisonRouteData] = useState<number[][] | null>(null)
   const [routeResult, setRouteResult] = useState<any | null>(null)
   const [isCalculating, setIsCalculating] = useState<boolean>(false)
   const [routeError, setRouteError] = useState<string | null>(null)
+
+  // Selected landmark / science target card (Phase 5 & 6)
+  const [selectedLandmark, setSelectedLandmark] = useState<{
+    name: string
+    description?: string
+    lat?: number
+    lon?: number
+    type?: string
+  } | null>(null)
 
   // Overlay toggle handler
   const toggleOverlay = (name: string) => {
@@ -101,8 +121,23 @@ export default function App() {
     }
   }
 
-  // Calculate A* Route via Backend
-  const handleComputeRoute = async (s = startPoint, d = destPoint) => {
+  // Handle clicking on an entity marker
+  const handleTargetSelected = (target: { name: string; description?: string }) => {
+    // Find matching science target or perseverance waypoint to get coordinates
+    const sci = SCIENCE_TARGETS.find((s) => s.name.toLowerCase() === target.name.toLowerCase())
+    const pers = PERSEVERANCE_WAYPOINTS.find((p) => p.name.toLowerCase() === target.name.toLowerCase())
+    const item = sci || pers
+    setSelectedLandmark({
+      name: target.name,
+      description: target.description || item?.description,
+      lat: item?.lat,
+      lon: item?.lon,
+      type: sci ? sci.type : 'Mission Milestone',
+    })
+  }
+
+  // Calculate A* Route via Backend with configurable risk weights (Phase 4)
+  const handleComputeRoute = async (s = startPoint, d = destPoint, strategy = routeStrategy) => {
     if (!s || !d) {
       setRouteError('Please specify both Start and Destination coordinates.')
       return
@@ -111,12 +146,16 @@ export default function App() {
     setIsCalculating(true)
     setRouteError(null)
 
+    const riskWeight = strategy === 'safe' ? 3.0 : strategy === 'balanced' ? 1.5 : 0.0
+
     try {
       const params = new URLSearchParams({
         start_lat: s.lat.toString(),
         start_lon: s.lon.toString(),
         goal_lat: d.lat.toString(),
         goal_lon: d.lon.toString(),
+        risk_weight: riskWeight.toString(),
+        compare: 'true',
       })
 
       const response = await fetch(`http://127.0.0.1:8000/route?${params.toString()}`)
@@ -128,6 +167,13 @@ export default function App() {
 
       setRouteData(data.route)
       setRouteResult(data)
+
+      // Set comparison route if present
+      if (data.comparison && data.comparison.direct_route) {
+        setComparisonRouteData(data.comparison.direct_route)
+      } else {
+        setComparisonRouteData(null)
+      }
     } catch (err: any) {
       console.error('Route planning error:', err)
       setRouteError(err.message || 'Route planning failed.')
@@ -139,6 +185,7 @@ export default function App() {
   // Clear current route
   const handleClearRoute = () => {
     setRouteData(null)
+    setComparisonRouteData(null)
     setRouteResult(null)
     setRouteError(null)
   }
@@ -148,22 +195,22 @@ export default function App() {
     setStartPoint(preset.start)
     setDestPoint(preset.dest)
     setRouteError(null)
-    handleComputeRoute(preset.start, preset.dest)
+    handleComputeRoute(preset.start, preset.dest, routeStrategy)
+  }
+
+  // Camera Fly to coordinates
+  const flyToCoordinates = (lon: number, lat: number, altitude = 150000) => {
+    const viewer = viewerRef.current
+    if (!viewer || viewer.isDestroyed()) return
+    viewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(lon, lat, altitude, Cesium.Ellipsoid.MARS),
+      duration: 1.5,
+    })
   }
 
   // Camera Fly to Jezero
   const handleFlyToJezero = () => {
-    const viewer = viewerRef.current
-    if (!viewer || viewer.isDestroyed()) return
-    viewer.camera.flyTo({
-      destination: Cesium.Cartesian3.fromDegrees(
-        77.45,
-        18.44,
-        450000,
-        Cesium.Ellipsoid.MARS,
-      ),
-      duration: 1.6,
-    })
+    flyToCoordinates(77.45, 18.44, 450000)
   }
 
   return (
@@ -190,7 +237,11 @@ export default function App() {
 
           <div className={`status ${backendStatus.toLowerCase()}`}>
             <span>●</span>
-            {backendStatus === 'CONNECTED' ? 'BACKEND ONLINE' : backendStatus === 'CONNECTING' ? 'CONNECTING...' : 'OFFLINE (LOCAL)'}
+            {backendStatus === 'CONNECTED'
+              ? 'BACKEND ONLINE'
+              : backendStatus === 'CONNECTING'
+              ? 'CONNECTING...'
+              : 'OFFLINE (LOCAL)'}
           </div>
         </div>
       </header>
@@ -205,19 +256,26 @@ export default function App() {
               id="tab-mission-btn"
               onClick={() => setActiveTab('mission')}
             >
-              🚀 MISSION PLANNER
+              🚀 PLANNER
+            </button>
+            <button
+              className={`tab-btn ${activeTab === 'targets' ? 'active' : ''}`}
+              id="tab-targets-btn"
+              onClick={() => setActiveTab('targets')}
+            >
+              🎯 SITES
             </button>
             <button
               className={`tab-btn ${activeTab === 'layers' ? 'active' : ''}`}
               id="tab-layers-btn"
               onClick={() => setActiveTab('layers')}
             >
-              🗺️ DATA LAYERS
+              🗺️ LAYERS
             </button>
           </div>
 
-          {activeTab === 'mission' ? (
-            /* MISSION PLANNER TAB (Phase 3) */
+          {activeTab === 'mission' && (
+            /* MISSION PLANNER TAB (Phase 3 & Phase 4) */
             <div className="mission-panel">
               <div className="panel-section-header">
                 <span className="section-title">QUICK MISSION PRESETS</span>
@@ -236,8 +294,45 @@ export default function App() {
                 ))}
               </div>
 
+              {/* ROUTE ENGINE STRATEGY (Phase 4) */}
+              <div className="panel-section-header" style={{ marginTop: 18 }}>
+                <span className="section-title">TRAVERSE STRATEGY (8-WAY A*)</span>
+              </div>
+              <div className="strategy-selector">
+                <button
+                  className={`strategy-chip ${routeStrategy === 'safe' ? 'active safe' : ''}`}
+                  onClick={() => {
+                    setRouteStrategy('safe')
+                    if (routeData) handleComputeRoute(startPoint, destPoint, 'safe')
+                  }}
+                  title="Strongest hazard and steep slope avoidance"
+                >
+                  🛡️ Safe
+                </button>
+                <button
+                  className={`strategy-chip ${routeStrategy === 'balanced' ? 'active balanced' : ''}`}
+                  onClick={() => {
+                    setRouteStrategy('balanced')
+                    if (routeData) handleComputeRoute(startPoint, destPoint, 'balanced')
+                  }}
+                  title="Optimal balance of distance and safety"
+                >
+                  ⚖️ Balanced
+                </button>
+                <button
+                  className={`strategy-chip ${routeStrategy === 'direct' ? 'active direct' : ''}`}
+                  onClick={() => {
+                    setRouteStrategy('direct')
+                    if (routeData) handleComputeRoute(startPoint, destPoint, 'direct')
+                  }}
+                  title="Shortest distance with zero risk penalty"
+                >
+                  ⚡ Direct
+                </button>
+              </div>
+
               {/* WAYPOINT SELECTION */}
-              <div className="panel-section-header" style={{ marginTop: 20 }}>
+              <div className="panel-section-header" style={{ marginTop: 18 }}>
                 <span className="section-title">WAYPOINT CONFIGURATION</span>
               </div>
 
@@ -246,7 +341,7 @@ export default function App() {
                 <div className="coord-header">
                   <div className="coord-title">
                     <span className="point-badge lime-dot" />
-                    START LOCATION (PERSEVERANCE)
+                    START LOCATION
                   </div>
                   <button
                     className={`pick-btn ${selectionMode === 'start' ? 'picking' : ''}`}
@@ -293,7 +388,7 @@ export default function App() {
                 <div className="coord-header">
                   <div className="coord-title">
                     <span className="point-badge red-dot" />
-                    DESTINATION (SCIENCE TARGET)
+                    DESTINATION
                   </div>
                   <button
                     className={`pick-btn ${selectionMode === 'destination' ? 'picking' : ''}`}
@@ -339,6 +434,16 @@ export default function App() {
                 Valid Jezero Grid: 16.5°N – 20.4°N, 75.5°E – 79.4°E
               </div>
 
+              {/* COMPARISON TOGGLE (Phase 4) */}
+              <label className="comparison-toggle">
+                <input
+                  type="checkbox"
+                  checked={showComparison}
+                  onChange={(e) => setShowComparison(e.target.checked)}
+                />
+                Show Direct Path vs Safe Traverse comparison
+              </label>
+
               {/* ACTION BUTTONS */}
               <div className="cta-group">
                 <button
@@ -347,7 +452,7 @@ export default function App() {
                   disabled={isCalculating || !startPoint || !destPoint}
                   onClick={() => handleComputeRoute()}
                 >
-                  {isCalculating ? '⚡ RUNNING A* TRAVERSE ENGINE...' : '▶ COMPUTE A* ROUTE'}
+                  {isCalculating ? '⚡ RUNNING A* 8-WAY PATHFINDER...' : '▶ COMPUTE A* ROUTE'}
                 </button>
                 {routeData && (
                   <button className="clear-btn" id="clear-route-btn" onClick={handleClearRoute}>
@@ -371,7 +476,7 @@ export default function App() {
               {routeResult && (
                 <div className="metrics-card">
                   <div className="metrics-badge">
-                    <span className="live-dot" /> A* OPTIMAL TRAVERSE
+                    <span className="live-dot" /> A* OPTIMAL TRAVERSE ({routeStrategy.toUpperCase()})
                   </div>
 
                   <div className="metrics-grid">
@@ -391,7 +496,12 @@ export default function App() {
                       <div
                         className="metric-value"
                         style={{
-                          color: routeResult.max_risk < 25 ? '#22c55e' : routeResult.max_risk < 45 ? '#eab308' : '#ef4444',
+                          color:
+                            routeResult.max_risk < 25
+                              ? '#22c55e'
+                              : routeResult.max_risk < 45
+                              ? '#eab308'
+                              : '#ef4444',
                         }}
                       >
                         {routeResult.max_risk.toFixed(1)}
@@ -400,22 +510,119 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* COMPARISON METRICS (Phase 4) */}
+                  {showComparison && routeResult.comparison && (
+                    <div className="comparison-box">
+                      <div className="comparison-header">
+                        <span className="comparison-dot orange" />
+                        DIRECT BASELINE COMPARISON
+                      </div>
+                      <div className="comparison-row">
+                        <span>Direct Shortest Distance:</span>
+                        <strong>{routeResult.comparison.direct_distance_km} km</strong>
+                      </div>
+                      <div className="comparison-row">
+                        <span>Direct Peak Hazard:</span>
+                        <strong style={{ color: '#ef4444' }}>
+                          {routeResult.comparison.direct_max_risk.toFixed(1)}
+                        </strong>
+                      </div>
+                      {routeResult.comparison.risk_reduction_pct > 0 && (
+                        <div className="comparison-badge">
+                          🛡️ {routeResult.comparison.risk_reduction_pct}% Peak Hazard Reduction achieved by risk-aware detour
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* SAFETY RATING */}
                   <div className="safety-rating">
                     <div className="safety-label">ROVER SAFETY ASSESSMENT:</div>
                     <div className="safety-status safe">
-                      ✅ NOMINAL — All segments stay under slope limits (&lt;15°) and avoid impassable scarps.
+                      ✅ NOMINAL — 8-way diagonal routing avoids corner-cutting and keeps vehicle under pitch limits (&lt;15°).
                     </div>
-                  </div>
-
-                  {/* PATHFINDING REASONING */}
-                  <div className="path-reasoning">
-                    <strong>Algorithmic Justification:</strong> The A* heuristic weighted local slope gradient against distance, bypassing boulder-dense terrain and steep crater terracing while maintaining an energy-efficient traverse.
                   </div>
                 </div>
               )}
             </div>
-          ) : (
+          )}
+
+          {activeTab === 'targets' && (
+            /* TARGETS & SITES TAB (Phase 5 & Phase 6) */
+            <div className="targets-panel">
+              <div className="panel-section-header">
+                <span className="section-title">SCIENCE TARGETS (JEZERO CRATER)</span>
+              </div>
+              <div className="targets-list">
+                {SCIENCE_TARGETS.map((target) => (
+                  <div key={target.name} className="target-item-card">
+                    <div className="target-top">
+                      <div>
+                        <div className="target-name">{target.name}</div>
+                        <div className="target-type">{target.type}</div>
+                      </div>
+                      <span className={`priority-pill ${target.priority?.toLowerCase()}`}>
+                        {target.priority}
+                      </span>
+                    </div>
+                    <p className="target-desc">{target.description}</p>
+                    <div className="target-actions">
+                      <button
+                        className="target-btn"
+                        onClick={() => {
+                          setDestPoint({ lat: target.lat, lon: target.lon })
+                          setActiveTab('mission')
+                        }}
+                      >
+                        🎯 Set Destination
+                      </button>
+                      <button
+                        className="target-btn icon"
+                        onClick={() => flyToCoordinates(target.lon, target.lat, 80000)}
+                        title="Focus Camera"
+                      >
+                        🔭 View
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="panel-section-header" style={{ marginTop: 24 }}>
+                <span className="section-title">PERSEVERANCE MISSION LANDMARKS</span>
+              </div>
+              <div className="targets-list">
+                {PERSEVERANCE_WAYPOINTS.map((wp) => (
+                  <div key={wp.name} className="target-item-card landmark">
+                    <div className="target-top">
+                      <div className="target-name">{wp.name}</div>
+                    </div>
+                    <p className="target-desc">{wp.description}</p>
+                    <div className="target-actions">
+                      <button
+                        className="target-btn"
+                        onClick={() => {
+                          setStartPoint({ lat: wp.lat, lon: wp.lon })
+                          setActiveTab('mission')
+                        }}
+                      >
+                        📍 Set Start
+                      </button>
+                      <button
+                        className="target-btn icon"
+                        onClick={() => flyToCoordinates(wp.lon, wp.lat, 60000)}
+                        title="Focus Camera"
+                      >
+                        🔭 View
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'layers' && (
             /* DATA LAYERS TAB (Phase 1 & Phase 2) */
             <div className="layers-panel">
               <h2 className="section-label">TERRAIN ANALYSIS (MUTUALLY EXCLUSIVE)</h2>
@@ -487,6 +694,51 @@ export default function App() {
             </div>
           )}
 
+          {/* FLOATING LANDMARK CARD (when clicked on 3D globe) */}
+          {selectedLandmark && (
+            <div className="landmark-floating-card">
+              <div className="card-top">
+                <div className="card-badge">{selectedLandmark.type || 'Landmark'}</div>
+                <button className="card-close" onClick={() => setSelectedLandmark(null)}>
+                  ✕
+                </button>
+              </div>
+              <h3 className="card-title">{selectedLandmark.name}</h3>
+              {selectedLandmark.description && (
+                <p className="card-desc">{selectedLandmark.description}</p>
+              )}
+              {selectedLandmark.lat && selectedLandmark.lon && (
+                <div className="card-coords">
+                  {selectedLandmark.lat.toFixed(4)}°N, {selectedLandmark.lon.toFixed(4)}°E
+                </div>
+              )}
+              <div className="card-actions">
+                {selectedLandmark.lat && selectedLandmark.lon && (
+                  <>
+                    <button
+                      className="card-action-btn"
+                      onClick={() => {
+                        setStartPoint({ lat: selectedLandmark.lat!, lon: selectedLandmark.lon! })
+                        setActiveTab('mission')
+                      }}
+                    >
+                      📍 Set as Start
+                    </button>
+                    <button
+                      className="card-action-btn primary"
+                      onClick={() => {
+                        setDestPoint({ lat: selectedLandmark.lat!, lon: selectedLandmark.lon! })
+                        setActiveTab('mission')
+                      }}
+                    >
+                      🎯 Set as Destination
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* SCIENTIFIC LEGEND OVERLAY (Phase 2) */}
           <div className="map-legend-container">
             <LegendPanel activeLayer={activeLayer} />
@@ -502,7 +754,9 @@ export default function App() {
               startPoint={startPoint}
               destPoint={destPoint}
               routeData={routeData}
+              comparisonRouteData={showComparison ? comparisonRouteData : null}
               onPointSelected={handlePointSelected}
+              onTargetSelected={handleTargetSelected}
             />
           </GlobeErrorBoundary>
         </section>
