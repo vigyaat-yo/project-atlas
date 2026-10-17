@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import MarsGlobe, { type GlobePoint } from './components/MarsGlobe'
 import { LegendPanel } from './components/LegendPanel'
+import { GlobeErrorBoundary } from './components/GlobeErrorBoundary'
 import * as Cesium from 'cesium'
 import './mars.css'
 
@@ -492,16 +493,18 @@ export default function App() {
           </div>
 
           {/* 3D GLOBE COMPONENT */}
-          <MarsGlobe
-            viewerRef={viewerRef}
-            activeLayer={activeLayer}
-            overlays={overlays}
-            selectionMode={selectionMode}
-            startPoint={startPoint}
-            destPoint={destPoint}
-            routeData={routeData}
-            onPointSelected={handlePointSelected}
-          />
+          <GlobeErrorBoundary>
+            <MarsGlobe
+              viewerRef={viewerRef}
+              activeLayer={activeLayer}
+              overlays={overlays}
+              selectionMode={selectionMode}
+              startPoint={startPoint}
+              destPoint={destPoint}
+              routeData={routeData}
+              onPointSelected={handlePointSelected}
+            />
+          </GlobeErrorBoundary>
         </section>
       </div>
 

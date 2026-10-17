@@ -236,6 +236,7 @@ function getTerrainCache(): TerrainCache {
   const slopeGrid = new Float32Array(width * height)
   const riskGrid = new Float32Array(width * height)
   let slopeMax = 0
+  let riskMax = 0
   let riskSum = 0
   const dy = marsRadius * stepRadians
 
@@ -269,6 +270,7 @@ function getTerrainCache(): TerrainCache {
 
       const riskVal = (slopeDeg * slopeDeg) / 10
       riskGrid[idx] = riskVal
+      if (riskVal > riskMax) riskMax = riskVal
       riskSum += riskVal
     }
   }
@@ -282,7 +284,7 @@ function getTerrainCache(): TerrainCache {
     slopeGrid,
     slopeMax,
     riskGrid,
-    riskMax: Math.max(...riskGrid),
+    riskMax,
     riskMean: riskSum / (width * height),
   }
 
