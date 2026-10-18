@@ -49,7 +49,7 @@ type RouteStrategy = 'safe' | 'balanced' | 'direct'
 
 export default function App() {
   const viewerRef = useRef<Cesium.Viewer | null>(null)
-  const [activeTab, setActiveTab] = useState<'mission' | 'layers' | 'targets'>('mission')
+  const [activeTab, setActiveTab] = useState<'mission' | 'briefing' | 'saved' | 'layers' | 'targets'>('mission')
   const [backendStatus, setBackendStatus] = useState<'CONNECTED' | 'OFFLINE' | 'CONNECTING'>('CONNECTING')
   const [activeLayer, setActiveLayer] = useState<string | null>('Elevation')
   const [overlays, setOverlays] = useState<Set<string>>(new Set(['Science targets', 'Perseverance']))
@@ -67,6 +67,19 @@ export default function App() {
   const [isCalculating, setIsCalculating] = useState<boolean>(false)
   const [routeError, setRouteError] = useState<string | null>(null)
 
+  // AI Explanation & Mission Persistence State (Phase 8 & 9)
+  const [aiBriefing, setAiBriefing] = useState<any | null>(null)
+  const [isExplaining, setIsExplaining] = useState<boolean>(false)
+  const [explainError, setExplainError] = useState<string | null>(null)
+
+  const [savedMissions, setSavedMissions] = useState<any[]>([])
+  const [isLoadingMissions, setIsLoadingMissions] = useState<boolean>(false)
+  const [saveModalOpen, setSaveModalOpen] = useState<boolean>(false)
+  const [missionTitle, setMissionTitle] = useState<string>('')
+  const [missionNotes, setMissionNotes] = useState<string>('')
+  const [isSavingMission, setIsSavingMission] = useState<boolean>(false)
+  const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null)
+
   // Selected landmark / science target card (Phase 5 & 6)
   const [selectedLandmark, setSelectedLandmark] = useState<{
     name: string
@@ -75,6 +88,7 @@ export default function App() {
     lon?: number
     type?: string
   } | null>(null)
+
 
   // Overlay toggle handler
   const toggleOverlay = (name: string) => {
@@ -188,7 +202,163 @@ export default function App() {
     setComparisonRouteData(null)
     setRouteResult(null)
     setRouteError(null)
+    setAiBriefing(null)
+    setExplainError(null)
   }
+
+  // Fetch AI mission explanation (Phase 9)
+  const handleExplainRoute = async () => {
+    if (!routeData || !routeResult || !startPoint || !destPoint) return
+    setIsExplaining(true)
+    setExplainError(null)
+
+    try {
+      const riskWeight = routeStrategy === 'safe' ? 3.0 : routeStrategy === 'balanced' ? 1.5 : 0.0
+      const payload = {
+        route: routeData,
+        start_coords: startPoint,
+        goal_coords: destPoint,
+        risk_weight: riskWeight,
+        max_risk: 50.0,
+        comparison: routeResult.comparison || null,
+      }
+
+      const res = await fetch('http://127.0.0.1:8000/explain-route', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to generate AI mission briefing')
+      }
+      const data = await res.json()
+      setAiBriefing(data)
+      setActiveTab('briefing')
+    } catch (err: any) {
+      console.error('AI Explanation error:', err)
+      setExplainError(err.message || 'Unable to generate explanation')
+    } finally {
+      setIsExplaining(false)
+    }
+  }
+
+  // Fetch saved missions from SQLite (Phase 8)
+  const handleFetchSavedMissions = async () => {
+    setIsLoadingMissions(true)
+    try {
+      const res = await fetch('http://127.0.0.1:8000/missions')
+      if (res.ok) {
+        const data = await res.json()
+        setSavedMissions(data)
+      }
+    } catch (err) {
+      console.error('Error fetching missions:', err)
+    } finally {
+      setIsLoadingMissions(false)
+    }
+  }
+
+  // Save current mission to database (Phase 8)
+  const handleSaveCurrentMission = async () => {
+    if (!routeResult || !routeData || !startPoint || !destPoint) return
+    setIsSavingMission(true)
+    try {
+      const title = missionTitle.trim() || `Traverse to (${destPoint.lat.toFixed(2)}°N, ${destPoint.lon.toFixed(2)}°E)`
+      const payload = {
+        title,
+        start_lat: startPoint.lat,
+        start_lon: startPoint.lon,
+        goal_lat: destPoint.lat,
+        goal_lon: destPoint.lon,
+        risk_weight: routeResult.risk_weight || 1.5,
+        max_risk: 50.0,
+        elev_weight: 0.0,
+        distance_km: routeResult.approx_distance_km,
+        waypoints_count: routeResult.route_length,
+        mean_risk: routeResult.mean_risk,
+        max_risk_val: routeResult.max_risk,
+        risk_reduction_pct: routeResult.comparison?.risk_reduction_pct || null,
+        distance_delta_km: routeResult.comparison?.distance_delta_km || null,
+        waypoints: routeData,
+        comparison: routeResult.comparison || null,
+        ai_explanation: aiBriefing || null,
+        operator_notes: missionNotes.trim(),
+      }
+
+      const res = await fetch('http://127.0.0.1:8000/missions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to save mission')
+      }
+      setSaveSuccessMsg('Mission persisted to database!')
+      setTimeout(() => setSaveSuccessMsg(null), 3000)
+      setSaveModalOpen(false)
+      setMissionTitle('')
+      setMissionNotes('')
+      handleFetchSavedMissions()
+    } catch (err: any) {
+      alert(`Save error: ${err.message}`)
+    } finally {
+      setIsSavingMission(false)
+    }
+  }
+
+  // Load a saved mission onto the 3D globe (Phase 8)
+  const handleLoadSavedMission = async (m: any) => {
+    try {
+      const res = await fetch(`http://127.0.0.1:8000/missions/${m.id}`)
+      if (!res.ok) throw new Error('Failed to load mission details')
+      const detail = await res.json()
+
+      const s = { lat: detail.start_lat, lon: detail.start_lon }
+      const d = { lat: detail.goal_lat, lon: detail.goal_lon }
+      setStartPoint(s)
+      setDestPoint(d)
+      setRouteData(detail.waypoints)
+      setRouteResult({
+        start_coords: s,
+        goal_coords: d,
+        approx_distance_km: detail.distance_km,
+        route_length: detail.waypoints_count,
+        mean_risk: detail.mean_risk,
+        max_risk: detail.max_risk_val,
+        risk_weight: detail.risk_weight,
+        comparison: detail.comparison && Object.keys(detail.comparison).length ? detail.comparison : null,
+      })
+      if (detail.comparison && detail.comparison.direct_route) {
+        setComparisonRouteData(detail.comparison.direct_route)
+      } else {
+        setComparisonRouteData(null)
+      }
+      if (detail.ai_explanation && Object.keys(detail.ai_explanation).length) {
+        setAiBriefing(detail.ai_explanation)
+      }
+      flyToCoordinates(d.lon, d.lat, 250000)
+      setActiveTab('mission')
+    } catch (err: any) {
+      alert(`Load failed: ${err.message}`)
+    }
+  }
+
+  // Delete a saved mission (Phase 8)
+  const handleDeleteSavedMission = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!confirm('Are you sure you want to delete this saved mission?')) return
+    try {
+      const res = await fetch(`http://127.0.0.1:8000/missions/${id}`, { method: 'DELETE' })
+      if (res.ok) {
+        setSavedMissions((prev) => prev.filter((item) => item.id !== id))
+      }
+    } catch (err) {
+      console.error('Delete error:', err)
+    }
+  }
+
 
   // Reset to preset
   const handleApplyPreset = (preset: MissionPreset) => {
@@ -259,6 +429,28 @@ export default function App() {
               🚀 PLANNER
             </button>
             <button
+              className={`tab-btn ${activeTab === 'briefing' ? 'active' : ''}`}
+              id="tab-briefing-btn"
+              onClick={() => {
+                setActiveTab('briefing')
+                if (!aiBriefing && routeData) {
+                  handleExplainRoute()
+                }
+              }}
+            >
+              🤖 BRIEFING
+            </button>
+            <button
+              className={`tab-btn ${activeTab === 'saved' ? 'active' : ''}`}
+              id="tab-saved-btn"
+              onClick={() => {
+                setActiveTab('saved')
+                handleFetchSavedMissions()
+              }}
+            >
+              💾 SAVED
+            </button>
+            <button
               className={`tab-btn ${activeTab === 'targets' ? 'active' : ''}`}
               id="tab-targets-btn"
               onClick={() => setActiveTab('targets')}
@@ -273,6 +465,7 @@ export default function App() {
               🗺️ LAYERS
             </button>
           </div>
+
 
           {activeTab === 'mission' && (
             /* MISSION PLANNER TAB (Phase 3 & Phase 4) */
@@ -542,14 +735,275 @@ export default function App() {
                       ✅ NOMINAL — 8-way diagonal routing avoids corner-cutting and keeps vehicle under pitch limits (&lt;15°).
                     </div>
                   </div>
+
+                  {/* AI BRIEFING & PERSISTENCE BUTTONS (Phase 8 & 9) */}
+                  <div className="briefing-actions" style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                    <button
+                      className="card-action-btn primary"
+                      id="explain-route-btn"
+                      disabled={isExplaining}
+                      onClick={handleExplainRoute}
+                      title="Generate AI mission traverse briefing"
+                    >
+                      {isExplaining ? '⏳ SYNTHESIZING...' : '🤖 AI Mission Briefing'}
+                    </button>
+                    <button
+                      className="card-action-btn"
+                      id="save-mission-btn"
+                      onClick={() => setSaveModalOpen(true)}
+                      title="Save mission plan to database"
+                    >
+                      💾 Save Mission
+                    </button>
+                  </div>
+
+                  {saveSuccessMsg && (
+                    <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: 4, background: 'rgba(34, 197, 94, 0.15)', border: '1px solid rgba(34, 197, 94, 0.3)', color: '#86efac', fontSize: 11, textAlign: 'center' }}>
+                      ✓ {saveSuccessMsg}
+                    </div>
+                  )}
                 </div>
               )}
+            </div>
+          )}
+
+          {activeTab === 'briefing' && (
+            /* AI MISSION BRIEFING TAB (Phase 9) */
+            <div className="briefing-panel">
+              <div className="panel-section-header">
+                <span className="section-title">AI MISSION BRIEFING</span>
+              </div>
+
+              {!routeData && (
+                <div className="briefing-card">
+                  <div className="briefing-title">No Active Traverse Route</div>
+                  <div className="briefing-text">
+                    Select start and destination coordinates in the Planner tab and compute a traverse route to generate an AI Mission Briefing.
+                  </div>
+                  <button
+                    className="card-action-btn primary"
+                    onClick={() => setActiveTab('mission')}
+                  >
+                    🚀 Open Route Planner
+                  </button>
+                </div>
+              )}
+
+              {routeData && isExplaining && (
+                <div className="briefing-card highlight" style={{ textAlign: 'center', padding: 24 }}>
+                  <div className="briefing-title">🛰️ Synthesizing Terrain Metrics...</div>
+                  <div className="briefing-text" style={{ marginTop: 8 }}>
+                    Analyzing topographic elevation delta, central difference slope, and MOLA obstacle hazards along the 8-way traverse...
+                  </div>
+                </div>
+              )}
+
+              {explainError && (
+                <div className="route-alert error">
+                  <div className="alert-icon">⚠️</div>
+                  <div className="alert-content">
+                    <div className="alert-title">BRIEFING GENERATION ERROR</div>
+                    <div>{explainError}</div>
+                    <button
+                      className="card-action-btn"
+                      style={{ marginTop: 8 }}
+                      onClick={handleExplainRoute}
+                    >
+                      ↻ Retry Briefing
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {routeData && aiBriefing && !isExplaining && (
+                <>
+                  {/* SOURCE & TITLE BADGE */}
+                  <div className="briefing-card highlight">
+                    <div className="briefing-badge">
+                      <span>●</span>
+                      {aiBriefing.source === 'gemini_ai_assisted'
+                        ? 'GEMINI AI-ASSISTED SYNTHESIS'
+                        : 'NASA GROUND-TRUTH ENGINE'}
+                    </div>
+                    <div className="briefing-title">EXECUTIVE MISSION TRAVERSE SUMMARY</div>
+                    <div className="briefing-text">{aiBriefing.executive_summary}</div>
+                  </div>
+
+                  {/* PATHFINDING RATIONALE & BASELINE COMPARISON */}
+                  <div className="briefing-card">
+                    <div className="briefing-title">PATHFINDING RATIONALE & DETOUR AVOIDANCE</div>
+                    <div className="briefing-text">{aiBriefing.route_rationale}</div>
+                  </div>
+
+                  {/* PHYSICAL TERRAIN METRICS GRID */}
+                  {aiBriefing.metrics && (
+                    <div className="briefing-card">
+                      <div className="briefing-title">TERRAIN & HAZARD PROFILE</div>
+                      <div className="briefing-text">{aiBriefing.hazard_breakdown}</div>
+
+                      <div className="hazard-bar-container">
+                        <div
+                          className="hazard-segment safe"
+                          style={{ width: `${aiBriefing.metrics.safe_fraction_pct}%` }}
+                          title={`Safe: ${aiBriefing.metrics.safe_fraction_pct}%`}
+                        />
+                        <div
+                          className="hazard-segment moderate"
+                          style={{ width: `${aiBriefing.metrics.moderate_fraction_pct}%` }}
+                          title={`Moderate: ${aiBriefing.metrics.moderate_fraction_pct}%`}
+                        />
+                        <div
+                          className="hazard-segment elevated"
+                          style={{ width: `${aiBriefing.metrics.elevated_fraction_pct}%` }}
+                          title={`Elevated: ${aiBriefing.metrics.elevated_fraction_pct}%`}
+                        />
+                      </div>
+                      <div className="hazard-legend">
+                        <span style={{ color: '#22c55e' }}>Safe ({aiBriefing.metrics.safe_fraction_pct}%)</span>
+                        <span style={{ color: '#eab308' }}>Moderate ({aiBriefing.metrics.moderate_fraction_pct}%)</span>
+                        <span style={{ color: '#f97316' }}>Elevated ({aiBriefing.metrics.elevated_fraction_pct}%)</span>
+                      </div>
+
+                      <div className="briefing-grid">
+                        <div className="briefing-stat-box">
+                          <div className="briefing-stat-val">{aiBriefing.metrics.approx_distance_km} km</div>
+                          <div className="briefing-stat-lbl">TRAVERSE DISTANCE</div>
+                        </div>
+                        <div className="briefing-stat-box">
+                          <div className="briefing-stat-val">{aiBriefing.metrics.net_elevation_change_m} m</div>
+                          <div className="briefing-stat-lbl">NET ELEVATION DELTA</div>
+                        </div>
+                        <div className="briefing-stat-box">
+                          <div className="briefing-stat-val">+{aiBriefing.metrics.cumulative_climb_m} m</div>
+                          <div className="briefing-stat-lbl">CUMULATIVE ASCENT</div>
+                        </div>
+                        <div className="briefing-stat-box">
+                          <div className="briefing-stat-val">-{aiBriefing.metrics.cumulative_descent_m} m</div>
+                          <div className="briefing-stat-lbl">CUMULATIVE DESCENT</div>
+                        </div>
+                        <div className="briefing-stat-box">
+                          <div className="briefing-stat-val">{aiBriefing.metrics.slope_mean_deg}° / {aiBriefing.metrics.slope_max_deg}°</div>
+                          <div className="briefing-stat-lbl">MEAN / PEAK SLOPE</div>
+                        </div>
+                        <div className="briefing-stat-box">
+                          <div className="briefing-stat-val">{aiBriefing.metrics.steep_waypoints_count} cells</div>
+                          <div className="briefing-stat-lbl">STEEP CELLS (≥12°)</div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* TACTICAL RECOMMENDATIONS */}
+                  {aiBriefing.tactical_recommendations && (
+                    <div className="briefing-card">
+                      <div className="briefing-title">TACTICAL ROVER GUIDELINES</div>
+                      <ul className="recs-list">
+                        {aiBriefing.tactical_recommendations.map((rec: string, idx: number) => (
+                          <li key={idx}>{rec}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* OPERATIONAL LIMITATIONS & UNCERTAINTY */}
+                  <div className="uncertainty-box">
+                    <div className="uncertainty-header">
+                      <span>⚠️</span> PLANETARY DATA RESOLUTION LIMITATION
+                    </div>
+                    <div>{aiBriefing.limitations_and_uncertainties}</div>
+                  </div>
+
+                  {/* SAVE BUTTON */}
+                  <button
+                    className="card-action-btn primary"
+                    onClick={() => setSaveModalOpen(true)}
+                    style={{ padding: '10px 14px' }}
+                  >
+                    💾 Save Mission Plan to Database
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'saved' && (
+            /* SAVED MISSIONS TAB (Phase 8) */
+            <div className="saved-missions-panel">
+              <div className="panel-section-header">
+                <span className="section-title">SAVED MISSIONS (SQLITE DATABASE)</span>
+              </div>
+
+              {isLoadingMissions && (
+                <div style={{ textAlign: 'center', padding: 20, color: '#94a3b8', fontSize: 12 }}>
+                  Querying mission database...
+                </div>
+              )}
+
+              {!isLoadingMissions && savedMissions.length === 0 && (
+                <div className="briefing-card">
+                  <div className="briefing-title">No Saved Missions Found</div>
+                  <div className="briefing-text">
+                    Plan an autonomous traverse route in the Planner tab and click 'Save Mission' to store it permanently in the SQLite mission database.
+                  </div>
+                  <button
+                    className="card-action-btn primary"
+                    onClick={() => setActiveTab('mission')}
+                  >
+                    🚀 Plan a Mission
+                  </button>
+                </div>
+              )}
+
+              {!isLoadingMissions && savedMissions.map((m) => (
+                <div key={m.id} className="saved-mission-card">
+                  <div className="saved-card-header">
+                    <div>
+                      <div className="saved-mission-title">{m.title}</div>
+                      <div className="saved-mission-date">
+                        {new Date(m.created_at * 1000).toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="saved-mission-meta">
+                    <span>📏 {m.distance_km} km</span>
+                    <span>📍 {m.waypoints_count} pts</span>
+                    <span>⚠️ Risk {m.mean_risk.toFixed(1)}</span>
+                  </div>
+
+                  <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>
+                    ({m.start_lat.toFixed(3)}°N, {m.start_lon.toFixed(3)}°E) → ({m.goal_lat.toFixed(3)}°N, {m.goal_lon.toFixed(3)}°E)
+                  </div>
+
+                  {m.operator_notes && (
+                    <div style={{ fontSize: 11, color: '#cbd5e1', fontStyle: 'italic', marginTop: 2 }}>
+                      "{m.operator_notes}"
+                    </div>
+                  )}
+
+                  <div className="saved-mission-actions">
+                    <button
+                      className="saved-btn load"
+                      onClick={() => handleLoadSavedMission(m)}
+                    >
+                      🗺️ Load on 3D Globe
+                    </button>
+                    <button
+                      className="saved-btn del"
+                      onClick={(e) => handleDeleteSavedMission(m.id, e)}
+                    >
+                      🗑️ Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
 
           {activeTab === 'targets' && (
             /* TARGETS & SITES TAB (Phase 5 & Phase 6) */
             <div className="targets-panel">
+
               <div className="panel-section-header">
                 <span className="section-title">SCIENCE TARGETS (JEZERO CRATER)</span>
               </div>
@@ -772,6 +1226,55 @@ export default function App() {
         <span className="sep">/</span>
         <span>PERSEVERANCE MISSION AT JEZERO CRATER</span>
       </footer>
+
+      {/* SAVE MISSION MODAL (Phase 8) */}
+      {saveModalOpen && (
+        <div className="modal-overlay" onClick={() => setSaveModalOpen(false)}>
+          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <h3 className="modal-title">💾 Save Mission Plan</h3>
+            <p className="modal-desc">
+              Store this traverse route, terrain metrics, and AI briefing in the persistent mission database.
+            </p>
+
+            <div className="input-group">
+              <label>MISSION TITLE</label>
+              <input
+                className="modal-input"
+                type="text"
+                placeholder={`Traverse to (${destPoint?.lat.toFixed(2)}°N, ${destPoint?.lon.toFixed(2)}°E)`}
+                value={missionTitle}
+                onChange={(e) => setMissionTitle(e.target.value)}
+              />
+            </div>
+
+            <div className="input-group" style={{ marginTop: 8 }}>
+              <label>OPERATOR NOTES / OBJECTIVES</label>
+              <textarea
+                className="modal-input modal-textarea"
+                placeholder="Scientific goals, sample caching targets, or rover driving notes..."
+                value={missionNotes}
+                onChange={(e) => setMissionNotes(e.target.value)}
+              />
+            </div>
+
+            <div className="modal-actions">
+              <button
+                className="btn-secondary"
+                onClick={() => setSaveModalOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn-primary"
+                disabled={isSavingMission}
+                onClick={handleSaveCurrentMission}
+              >
+                {isSavingMission ? 'Saving...' : 'Save to Database'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   )
 }

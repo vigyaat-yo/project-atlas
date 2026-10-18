@@ -8,10 +8,24 @@ from backend.schemas import (
     RouteRequest,
     RouteComparison,
     Coordinates,
+    MissionExplanationResponse,
+    ExplainRouteRequest,
+    SaveMissionRequest,
+    SavedMissionSummary,
+    SavedMissionDetail,
 )
+from backend.database import (
+    init_db,
+    save_mission,
+    get_saved_missions,
+    get_saved_mission,
+    delete_saved_mission,
+)
+from backend.mission_explainer import generate_mission_explanation
 from fastapi import FastAPI, Query, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
+
 import numpy as np
 import math
 import time
@@ -45,6 +59,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Initialize embedded SQLite database for mission persistence
+init_db()
 
 
 # ----------------------------------------------------------------
@@ -374,3 +391,69 @@ def post_route(request: RouteRequest = Body(...)):
         elev_weight=request.elev_weight,
         compare=request.compare,
     )
+
+
+# ----------------------------------------------------------------
+# PHASE 9: AI-ASSISTED MISSION EXPLANATIONS
+# ----------------------------------------------------------------
+
+@app.post("/explain-route", response_model=MissionExplanationResponse, tags=["AI Mission Explanations"])
+def explain_route_endpoint(request: ExplainRouteRequest = Body(...)):
+    """
+    Synthesizes real terrain metrics, hazard distributions, and an authoritative
+    mission traverse explanation grounded strictly in verified MOLA data.
+    """
+    if not request.route:
+        raise HTTPException(status_code=400, detail="Traverse route is empty")
+
+    comp_dict = request.comparison.model_dump() if request.comparison else None
+    return generate_mission_explanation(
+        route=request.route,
+        comparison=comp_dict,
+        start_coords=request.start_coords.model_dump(),
+        goal_coords=request.goal_coords.model_dump(),
+        risk_weight=request.risk_weight,
+        max_risk=request.max_risk,
+        elevation=elevation,
+        slope=slope,
+        risk=risk,
+        cell_km=CELL_KM,
+    )
+
+
+# ----------------------------------------------------------------
+# PHASE 8: MISSION DATA PERSISTENCE & HISTORY
+# ----------------------------------------------------------------
+
+@app.post("/missions", response_model=SavedMissionDetail, tags=["Mission Persistence"])
+def create_mission(mission: SaveMissionRequest = Body(...)):
+    """Saves a planned traverse route, terrain metrics, and AI explanation to database."""
+    saved = save_mission(mission.model_dump())
+    if not saved:
+        raise HTTPException(status_code=500, detail="Failed to save mission plan")
+    return saved
+
+
+@app.get("/missions", response_model=List[SavedMissionSummary], tags=["Mission Persistence"])
+def list_missions(limit: int = Query(50, ge=1, le=100)):
+    """Retrieves list of previously planned and persisted rover missions."""
+    return get_saved_missions(limit=limit)
+
+
+@app.get("/missions/{mission_id}", response_model=SavedMissionDetail, tags=["Mission Persistence"])
+def read_mission(mission_id: str):
+    """Retrieves full details, waypoints, and AI explanation for a saved mission."""
+    mission = get_saved_mission(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail=f"Mission plan '{mission_id}' not found")
+    return mission
+
+
+@app.delete("/missions/{mission_id}", tags=["Mission Persistence"])
+def remove_mission(mission_id: str):
+    """Deletes a saved mission plan."""
+    success = delete_saved_mission(mission_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Mission plan '{mission_id}' not found")
+    return {"deleted": True, "id": mission_id}
+

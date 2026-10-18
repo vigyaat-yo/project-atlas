@@ -1,5 +1,6 @@
+from __future__ import annotations
 from pydantic import BaseModel, Field
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 
 
 class Coordinates(BaseModel):
@@ -84,3 +85,95 @@ class RouteRequest(BaseModel):
     max_risk: float = Field(50.0, ge=10.0, le=100.0, description="Max walkable risk threshold")
     elev_weight: float = Field(0.0, ge=0.0, le=5.0, description="Elevation ascent penalty")
     compare: bool = Field(True, description="Compute direct baseline comparison")
+
+
+# ----------------------------------------------------------------
+# PHASE 8 & 9: DATA STORAGE & AI MISSION EXPLANATION SCHEMAS
+# ----------------------------------------------------------------
+
+class MissionExplanationMetrics(BaseModel):
+    waypoints_count: int = Field(..., description="Total cell waypoints")
+    approx_distance_km: float = Field(..., description="True Euclidean traverse distance in km")
+    elevation_start_m: float = Field(..., description="Start elevation in meters")
+    elevation_end_m: float = Field(..., description="Target elevation in meters")
+    elevation_min_m: float = Field(..., description="Lowest elevation on path")
+    elevation_max_m: float = Field(..., description="Highest elevation on path")
+    net_elevation_change_m: float = Field(..., description="Net elevation gain or drop")
+    cumulative_climb_m: float = Field(..., description="Total ascent in meters")
+    cumulative_descent_m: float = Field(..., description="Total descent in meters")
+    slope_mean_deg: float = Field(..., description="Average slope angle in degrees")
+    slope_max_deg: float = Field(..., description="Peak slope angle in degrees")
+    steep_waypoints_count: int = Field(..., description="Waypoints with slope >= 12 degrees")
+    risk_mean: float = Field(..., description="Mean hazard score along traverse")
+    risk_max: float = Field(..., description="Peak hazard score along traverse")
+    safe_fraction_pct: float = Field(..., description="Percentage of traverse in safe zone (risk < 20)")
+    moderate_fraction_pct: float = Field(..., description="Percentage of traverse in moderate zone (20 <= risk < 35)")
+    elevated_fraction_pct: float = Field(..., description="Percentage of traverse in elevated zone (35 <= risk <= 50)")
+
+
+class MissionExplanationResponse(BaseModel):
+    executive_summary: str = Field(..., description="High-level mission traverse summary")
+    route_rationale: str = Field(..., description="A* algorithm path decision rationale")
+    hazard_breakdown: str = Field(..., description="Detailed terrain hazards breakdown")
+    tactical_recommendations: List[str] = Field(..., description="Actionable rover operational guidelines")
+    limitations_and_uncertainties: str = Field(..., description="MOLA resolution limits and rover HazCam note")
+    source: str = Field(..., description="Explanation engine ('gemini_ai_assisted' or 'deterministic_synthesizer')")
+    metrics: Optional[MissionExplanationMetrics] = Field(None, description="Physical terrain metrics along traverse")
+
+
+class ExplainRouteRequest(BaseModel):
+    route: List[List[int]] = Field(..., description="Traverse waypoints (row, col)")
+    start_coords: Coordinates = Field(..., description="Start coordinates")
+    goal_coords: Coordinates = Field(..., description="Goal coordinates")
+    risk_weight: float = Field(1.5, description="Risk weight")
+    max_risk: float = Field(50.0, description="Max risk threshold")
+    comparison: Optional[RouteComparison] = Field(None, description="Direct baseline comparison")
+
+
+class SaveMissionRequest(BaseModel):
+    title: str = Field(..., description="Mission operational title")
+    start_lat: float = Field(..., description="Start latitude")
+    start_lon: float = Field(..., description="Start longitude")
+    goal_lat: float = Field(..., description="Goal latitude")
+    goal_lon: float = Field(..., description="Goal longitude")
+    risk_weight: float = Field(1.5, description="Risk weight")
+    max_risk: float = Field(50.0, description="Max risk threshold")
+    elev_weight: float = Field(0.0, description="Elevation weight")
+    distance_km: float = Field(..., description="Distance in km")
+    waypoints_count: int = Field(..., description="Number of waypoints")
+    mean_risk: float = Field(..., description="Mean risk score")
+    max_risk_val: float = Field(..., description="Peak risk score")
+    risk_reduction_pct: Optional[float] = Field(None, description="Risk reduction vs direct baseline")
+    distance_delta_km: Optional[float] = Field(None, description="Detour km vs direct baseline")
+    waypoints: List[List[int]] = Field(..., description="Traverse cell coordinates")
+    comparison: Optional[Dict[str, Any]] = Field(None, description="Direct comparison metrics")
+    ai_explanation: Optional[Dict[str, Any]] = Field(None, description="AI mission explanation")
+    operator_notes: Optional[str] = Field("", description="Operator field notes")
+
+
+class SavedMissionSummary(BaseModel):
+    id: str = Field(..., description="Unique mission ID")
+    title: str = Field(..., description="Mission operational title")
+    created_at: float = Field(..., description="Unix epoch creation timestamp")
+    start_lat: float = Field(..., description="Start latitude")
+    start_lon: float = Field(..., description="Start longitude")
+    goal_lat: float = Field(..., description="Goal latitude")
+    goal_lon: float = Field(..., description="Goal longitude")
+    distance_km: float = Field(..., description="Distance in km")
+    waypoints_count: int = Field(..., description="Number of waypoints")
+    mean_risk: float = Field(..., description="Mean risk score")
+    max_risk_val: float = Field(..., description="Peak risk score")
+    risk_reduction_pct: Optional[float] = Field(None, description="Risk reduction pct")
+    distance_delta_km: Optional[float] = Field(None, description="Detour km")
+    operator_notes: Optional[str] = Field(None, description="Operator notes")
+
+
+class SavedMissionDetail(SavedMissionSummary):
+    risk_weight: float = Field(..., description="Risk weight used")
+    max_risk: float = Field(..., description="Max risk threshold used")
+    elev_weight: float = Field(..., description="Elevation weight used")
+    waypoints: List[List[int]] = Field(..., description="Traverse waypoints")
+    comparison: Optional[Dict[str, Any]] = Field(default=None, description="Direct comparison metrics")
+    ai_explanation: Optional[Dict[str, Any]] = Field(default=None, description="AI explanation")
+
+
