@@ -705,10 +705,16 @@ export default function MarsGlobe({
 
     viewer.camera.flyTo({
       destination: Cesium.Cartesian3.fromDegrees(
-        jezeroLon, jezeroLat, 500000, Cesium.Ellipsoid.MARS,
+        jezeroLon, jezeroLat - 0.35, 320000, Cesium.Ellipsoid.MARS,
       ),
+      orientation: {
+        heading: Cesium.Math.toRadians(0.0),
+        pitch: Cesium.Math.toRadians(-50.0),
+        roll: 0.0,
+      },
       duration: 2,
     })
+
 
     viewer.selectedEntityChanged.addEventListener((entity) => {
       if (!entity) return

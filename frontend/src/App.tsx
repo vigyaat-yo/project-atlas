@@ -79,6 +79,8 @@ export default function App() {
   const [missionNotes, setMissionNotes] = useState<string>('')
   const [isSavingMission, setIsSavingMission] = useState<boolean>(false)
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null)
+  const [pipelineModalOpen, setPipelineModalOpen] = useState<boolean>(false)
+
 
   // Selected landmark / science target card (Phase 5 & 6)
   const [selectedLandmark, setSelectedLandmark] = useState<{
@@ -378,9 +380,34 @@ export default function App() {
     })
   }
 
-  // Camera Fly to Jezero
+  // Camera Fly to Jezero (Oblique 3D perspective)
   const handleFlyToJezero = () => {
-    flyToCoordinates(77.45, 18.44, 450000)
+    const viewer = viewerRef.current
+    if (!viewer || viewer.isDestroyed()) return
+    viewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(77.45, 18.09, 320000, Cesium.Ellipsoid.MARS),
+      orientation: {
+        heading: Cesium.Math.toRadians(0.0),
+        pitch: Cesium.Math.toRadians(-50.0),
+        roll: 0.0,
+      },
+      duration: 1.5,
+    })
+  }
+
+  // Interactive Demo Scenario for Hackathon (Phase 11)
+  const handleRunDemoScenario = async () => {
+    // Octavia Butler Landing Site -> Three Forks Delta Contact (Sample Depot)
+    const demoStart: GlobePoint = { lat: 18.4447, lon: 77.4508 }
+    const demoDest: GlobePoint = { lat: 18.4700, lon: 77.4200 }
+    setStartPoint(demoStart)
+    setDestPoint(demoDest)
+    setRouteStrategy('balanced')
+    setShowComparison(true)
+    setRouteError(null)
+    setActiveTab('mission')
+    flyToCoordinates(77.435, 18.455, 140000)
+    await handleComputeRoute(demoStart, demoDest, 'balanced')
   }
 
   return (
@@ -397,10 +424,28 @@ export default function App() {
 
         <div className="header-actions">
           <button
+            className="action-btn demo-btn"
+            id="demo-scenario-btn"
+            onClick={handleRunDemoScenario}
+            title="Execute verified Hackathon demonstration: Landing site to Delta Sample Depot"
+          >
+            🎬 Demo Scenario
+          </button>
+
+          <button
+            className="action-btn"
+            id="pipeline-btn"
+            onClick={() => setPipelineModalOpen(true)}
+            title="View MOLA elevation, slope gradient, hazard model and A* pipeline"
+          >
+            🔬 Tech Pipeline
+          </button>
+
+          <button
             className="action-btn"
             id="focus-jezero-btn"
             onClick={handleFlyToJezero}
-            title="Recenter camera on Jezero Crater"
+            title="Recenter camera on Jezero Crater in 3D"
           >
             🎯 Focus Jezero
           </button>
@@ -415,6 +460,7 @@ export default function App() {
           </div>
         </div>
       </header>
+
 
       <div className="workspace">
         {/* SIDEBAR NAVIGATION & CONTROLS */}
@@ -489,7 +535,9 @@ export default function App() {
 
               {/* ROUTE ENGINE STRATEGY (Phase 4) */}
               <div className="panel-section-header" style={{ marginTop: 18 }}>
-                <span className="section-title">TRAVERSE STRATEGY (8-WAY A*)</span>
+                <span className="section-title">
+                  <span className="workflow-step-num">2</span> TRAVERSE STRATEGY (8-WAY A*)
+                </span>
               </div>
               <div className="strategy-selector">
                 <button
@@ -526,8 +574,11 @@ export default function App() {
 
               {/* WAYPOINT SELECTION */}
               <div className="panel-section-header" style={{ marginTop: 18 }}>
-                <span className="section-title">WAYPOINT CONFIGURATION</span>
+                <span className="section-title">
+                  <span className="workflow-step-num">1</span> CONFIGURE WAYPOINTS
+                </span>
               </div>
+
 
               {/* START POINT */}
               <div className="coord-box start-box">
@@ -637,7 +688,12 @@ export default function App() {
                 Show Direct Path vs Safe Traverse comparison
               </label>
 
-              {/* ACTION BUTTONS */}
+              {/* ACTION BUTTONS (STEP 3) */}
+              <div className="panel-section-header" style={{ marginTop: 18 }}>
+                <span className="section-title">
+                  <span className="workflow-step-num">3</span> AUTONOMOUS ROUTE COMPUTATION
+                </span>
+              </div>
               <div className="cta-group">
                 <button
                   className="compute-btn"
@@ -665,12 +721,18 @@ export default function App() {
                 </div>
               )}
 
-              {/* ROUTE METRICS CARD */}
+              {/* ROUTE METRICS CARD (STEP 4) */}
               {routeResult && (
                 <div className="metrics-card">
+                  <div className="panel-section-header" style={{ marginBottom: 10 }}>
+                    <span className="section-title" style={{ fontSize: 11 }}>
+                      <span className="workflow-step-num">4</span> ROUTE EVALUATION & BRIEFING
+                    </span>
+                  </div>
                   <div className="metrics-badge">
                     <span className="live-dot" /> A* OPTIMAL TRAVERSE ({routeStrategy.toUpperCase()})
                   </div>
+
 
                   <div className="metrics-grid">
                     <div className="metric-box">
@@ -1270,6 +1332,100 @@ export default function App() {
                 onClick={handleSaveCurrentMission}
               >
                 {isSavingMission ? 'Saving...' : 'Save to Database'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SCIENCE & TECH PIPELINE MODAL (Phase 11) */}
+      {pipelineModalOpen && (
+        <div className="modal-overlay" onClick={() => setPipelineModalOpen(false)}>
+          <div className="modal-dialog large" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div>
+                <h3 className="modal-title">🔬 Planetary Navigation Science & Tech Pipeline</h3>
+                <p className="modal-desc" style={{ marginTop: 4 }}>
+                  How NASA MOLA orbital altimetry, topographic slope, hazard models, and 8-way A* integrate for autonomous rover routing.
+                </p>
+              </div>
+              <button
+                className="card-close"
+                onClick={() => setPipelineModalOpen(false)}
+                style={{ fontSize: 18 }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="pipeline-stage">
+              <div className="pipeline-stage-header">
+                <div className="pipeline-stage-num">1</div>
+                <div className="pipeline-stage-title">NASA MGS MOLA Digital Elevation Model (DEM)</div>
+              </div>
+              <p className="pipeline-stage-desc">
+                Mars Orbiter Laser Altimeter Mission Experiment Gridded Data Record (MEGDR) sampled at 128 pixels/degree (~463 meters per pixel) mapped onto the IAU 2000 Mars Spheroid (equatorial radius 3,396.19 km). Datum: Mars Areoid (6.1 mbar reference).
+              </p>
+              <div className="pipeline-formula">
+                Regional Quadrangle: 16.445°N – 20.445°N, 75.445°E – 79.445°E (513 × 513 grid cells)
+              </div>
+            </div>
+
+            <div className="pipeline-stage">
+              <div className="pipeline-stage-header">
+                <div className="pipeline-stage-num">2</div>
+                <div className="pipeline-stage-title">Topographic Slope Gradient Calculation</div>
+              </div>
+              <p className="pipeline-stage-desc">
+                2D spatial gradients are computed via central difference across adjacent cells to determine maximum ground slope angle. Slopes exceeding 15° breach the Perseverance rollover/pitch stability margin.
+              </p>
+              <div className="pipeline-formula">
+                θ = arctan( √((∂z/∂x)² + (∂z/∂y)²) ) × (180 / π) [degrees]
+              </div>
+            </div>
+
+            <div className="pipeline-stage">
+              <div className="pipeline-stage-header">
+                <div className="pipeline-stage-num">3</div>
+                <div className="pipeline-stage-title">Composite Terrain Hazard & Walkability Index</div>
+              </div>
+              <p className="pipeline-stage-desc">
+                Merges surface slope and local standard deviation roughness into a unified hazard cost score (0–100). Cells with hazard ≥ 50 (such as steep crater walls or delta scarps) are classified as impassable barriers.
+              </p>
+              <div className="pipeline-formula">
+                H = min(100, (slope / 25.0) × 60 + (roughness / 15.0) × 40)
+              </div>
+            </div>
+
+            <div className="pipeline-stage">
+              <div className="pipeline-stage-header">
+                <div className="pipeline-stage-num">4</div>
+                <div className="pipeline-stage-title">8-Way A* Pathfinding with Corner-Cutting Prevention</div>
+              </div>
+              <p className="pipeline-stage-desc">
+                Computes optimal paths using an admissible Octile distance heuristic. Strict corner-cutting prevention guarantees that diagonal traversals never clip through adjacent impassable obstacle corners.
+              </p>
+              <div className="pipeline-formula">
+                cost(step) = dist × [1.0 + risk_weight × (H / 25.0)] + elev_penalty
+              </div>
+            </div>
+
+            <div className="uncertainty-box">
+              <div className="uncertainty-header">
+                <span>⚠️</span> SCIENTIFIC RESOLUTION LIMITATION & OPERATIONAL REALITY
+              </div>
+              <div>
+                Orbital MOLA altimetry data is ~463m/pixel. Meter-scale boulders, small impact craters (&lt;100m diameter), sand ripples, and wheel-trapping soft drift cannot be resolved from orbit alone. Autonomous tactical navigation must rely on Perseverance's onboard autonomous hazard avoidance cameras (HazCams/NavCams) and AutoNav vision computing during each drive.
+              </div>
+            </div>
+
+            <div style={{ fontSize: 11, color: '#64748b', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+              <span>Data Sources: NASA PDS Geosciences Node · NASA JPL-Caltech · USGS Astrogeology</span>
+              <button
+                className="btn-primary"
+                onClick={() => setPipelineModalOpen(false)}
+              >
+                Close
               </button>
             </div>
           </div>
